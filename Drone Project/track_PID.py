@@ -51,8 +51,8 @@ class TrackingState(Enum):
     LOST = auto()       # Lost target, searching
     RETURNING = auto()  # Returning to start
 
-class EnhancedPID:
-    """Enhanced PID controller with anti-windup and rate limiting"""
+class PID:
+    """PID controller with anti-windup and rate limiting"""
     def __init__(self, kP, kI, kD, setpoint=0, output_limits=(-10, 10), i_windup_limit=5.0):
         self.kP, self.kI, self.kD = kP, kI, kD
         self.setpoint = setpoint
@@ -156,10 +156,10 @@ class DroneTracker:
         self.frame_count = 0
         
         # Initialize controllers
-        self.x_controller = EnhancedPID(*XY_PID, setpoint=0, output_limits=(-5, 5))  # Lateral (right/left)
-        self.y_controller = EnhancedPID(*XY_PID, setpoint=12.0, output_limits=(-2, 8))  # Forward/backward (distance)
-        self.z_controller = EnhancedPID(*Z_PID, setpoint=0, output_limits=(-3, 3))  # Vertical
-        self.yaw_controller = EnhancedPID(*YAW_PID, setpoint=0, output_limits=(-30, 30))  # Rotation
+        self.x_controller = PID(*XY_PID, setpoint=0, output_limits=(-5, 5))  # Lateral (right/left)
+        self.y_controller = PID(*XY_PID, setpoint=12.0, output_limits=(-2, 8))  # Forward/backward (distance)
+        self.z_controller = PID(*Z_PID, setpoint=0, output_limits=(-3, 3))  # Vertical
+        self.yaw_controller = PID(*YAW_PID, setpoint=0, output_limits=(-30, 30))  # Rotation
         
         # Performance metrics
         self.tracking_history = []
@@ -203,7 +203,7 @@ class DroneTracker:
             
         return max(2.0, min(50.0, distance))  # Clamp to reasonable range
     
-    def check_geofence(self, current_position):
+    def check_position(self, current_position):
         """Ensure drone stays within safe operating area"""
         distance_from_start = np.linalg.norm(current_position[:2] - self.start_position[:2])
         
@@ -211,7 +211,38 @@ class DroneTracker:
             print(f"Warning: Approaching geofence boundary ({distance_from_start:.1f}m from start)")
             return False
         return True
-    
+    def calculate_metrics(self):
+        """Calculate and print RMSE and average FPS."""
+        if not self.tracking_history:
+            print("No tracking data collected.")
+            return
+
+        # Convert history to numpy arrays
+        # history stores: (timestamp, error_x, error_y, error_distance)
+        data = np.array(self.tracking_history)
+        
+        # Calculate RMSE for lateral error (X) and vertical error (Y)
+        rmse_x = np.sqrt(np.mean(data[:, 1]**2))
+        rmse_y = np.sqrt(np.mean(data[:, 2]**2))
+        
+        # Calculate Average FPS
+        timestamps = data[:, 0]
+        duration = timestamps[-1] - timestamps[0]
+        avg_fps = len(timestamps) / duration if duration > 0 else 0
+
+        print("\n" + "="*40)
+        print("      PERFORMANCE METRICS       ")
+        print("="*40)
+        print(f"Lateral RMSE (Centering): {rmse_x:.4f} (normalized -1 to 1)")
+        print(f"Vertical RMSE (Centering): {rmse_y:.4f} (normalized -1 to 1)")
+        print(f"Average FPS:              {avg_fps:.2f}")
+        print("="*40)
+
+        # Save to CSV for plotting
+        np.savetxt("flight_metrics.csv", data, delimiter=",", header="timestamp,error_x,error_y,dist", comments="")
+        print("Metrics saved to 'flight_metrics.csv'")
+
+
     def calculate_3d_control(self, bbox, frame_shape, target_distance):
         """Calculate 3D control commands from bounding box"""
         H, W = frame_shape[:2]
@@ -247,7 +278,7 @@ class DroneTracker:
             target_velocity = np.zeros(3)
         
         # Update controllers with filtered measurements
-        # Lateral control (strafe left/right to center horizontally)
+        # Lateral control (move left/right to center horizontally)
         vx = self.x_controller.update(filtered_error_x, DT)
         
         # Forward/backward control (maintain desired distance)
@@ -259,12 +290,14 @@ class DroneTracker:
         # Yaw control (rotate to keep target centered, but less aggressive with lateral control)
         yaw_rate = self.yaw_controller.update(filtered_error_x * 0.5, DT)
         
-        # Adaptive control: Reduce forward speed when target is far from center
+        #  Reduce forward speed when target is far from center
         center_distance = math.sqrt(filtered_error_x**2 + filtered_error_y**2)
         if center_distance > 0.5:  # Target near edge
             vy *= 0.5  # Slow down when not well centered
             yaw_rate *= 1.5  # More aggressive yaw correction
-        
+        # Log the metrics (Time, Error X, Error Y, Filtered Distance)
+        self.tracking_history.append([time.time(), filtered_error_x, filtered_error_y, filtered_distance])
+
         return vx, vy, vz, yaw_rate, filtered_distance
     
     def execute_search_pattern(self):
@@ -435,7 +468,7 @@ class DroneTracker:
             cv2.putText(overlay, f"Lost for: {time.time() - self.target_lost_time:.0f}s", 
                        (W-200, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 1)
         
-        # Add transparency
+        
         cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
         
         return frame
@@ -499,14 +532,14 @@ class DroneTracker:
                     vx, vy, vz, yaw_rate = self.return_to_start()
                     control_values = {'Returning': True}
                     
-                # Apply geofence check
+                
                 current_pos = np.array([
                     drone_state.kinematics_estimated.position.x_val,
                     drone_state.kinematics_estimated.position.y_val,
                     drone_state.kinematics_estimated.position.z_val
                 ])
                 
-                if not self.check_geofence(current_pos):
+                if not self.check_position(current_pos):
                     # Slow down near boundary
                     vx *= 0.5
                     vy *= 0.5
@@ -552,11 +585,11 @@ class DroneTracker:
                     break
                     
                 self.frame_count += 1
-                
             except Exception as e:
                 print(f"Error in main loop: {e}")
                 time.sleep(1.0)
         
+        self.calculate_metrics() 
         # Cleanup
         print("Landing...")
         self.client.landAsync(vehicle_name=DRONE).join()
