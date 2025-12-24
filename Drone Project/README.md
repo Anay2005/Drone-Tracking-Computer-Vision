@@ -91,3 +91,30 @@ A post-processing tool that parses the flight logs.
 The system aims to minimize **RMSE (Root Mean Square Error)** and **Variance**.
 * **Typical Lateral Variance:** $< 0.005$ (Stable Flight)
 * **Re-acquisition Time:** $< 3.0s$ (using Spiral Search)
+
+## 🔭 Advanced Vision: Translation & Shift Detection
+
+Recent updates include a hybrid engine to calculate the precise pixel shift ($\Delta x, \Delta y$) between a reference image and a live feed. This is critical for **Optical Flow** and **Image Stabilization**.
+
+### 1. Phase Correlation (The Fourier Shift Theorem)
+For pure translations, we calculate shift in the frequency domain.
+* **Theory:** A shift in space becomes a phase shift in frequency: $\mathcal{F}\{f(x-x_0)\} = F(u)e^{-i2\pi u x_0}$.
+* **Spectral Whitening:** We normalize the cross-power spectrum to isolate phase information: $$R = \frac{F_1 \cdot F_2^{\*}}{|F_1 \cdot F_2^{\*}|}$$
+* **Robustness:** To handle lighting changes, we pre-process images using **Sobel Edge Detection** and **Otsu Thresholding** before the FFT. This tracks "structure" rather than "brightness."
+
+
+
+### 2. Sub-Pixel Refinement
+The FFT peak only gives integer accuracy. To get precise floating-point shifts (e.g., $\Delta x = 3.42$), we perform a **3x3 Quadratic Fit** around the peak energy.
+$$dx \approx \frac{C(x+1) - C(x-1)}{2(2C(x) - C(x+1) - C(x-1))}$$
+
+### 3. Hybrid Homography Pipeline
+Phase correlation fails if the camera rotates or zooms. The system solves this with a two-step "Rectify & Correlate" pipeline:
+1.  **Feature Matching:** Detects keypoints (ORB) and matches them between frames.
+2.  **RANSAC Homography:** Estimates the transformation matrix $H$.
+3.  **Decision Logic:**
+    * If $H$ is simple (translation only) $\rightarrow$ Use direct Phase Correlation.
+    * If $H$ is complex (rotation/scale) $\rightarrow$ **Warp** (Rectify) the live image using $H^{-1}$, *then* apply Phase Correlation for the final alignment.
+
+
+
