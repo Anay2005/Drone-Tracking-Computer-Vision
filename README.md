@@ -49,7 +49,7 @@ Recent updates include a hybrid engine to calculate the precise pixel shift ($\D
 For pure translations, we calculate shift in the frequency domain.
 * **Theory:** A shift in space becomes a phase shift in frequency: $\mathcal{F}\{f(x-x_0)\} = F(u)e^{-i2\pi u x_0}$.
 * **Spectral Whitening:** We normalize the cross-power spectrum to isolate phase information:
-  $$R = \frac{F_1 \cdot F_2^*}{|F_1 \cdot F_2^*|}$$
+  $R = \frac{F_1 \cdot F_2^*}{|F_1 \cdot F_2^*|}$
 * **Robustness:** To handle lighting changes, we pre-process images using **Sobel Edge Detection** and **Otsu Thresholding** before the FFT. This tracks "structure" rather than "brightness."
 
 
